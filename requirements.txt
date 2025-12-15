@@ -1,0 +1,73 @@
+# Streamlit frontend
+streamlit
+
+
+# =========================
+# Web API
+# =========================
+fastapi
+uvicorn[standard]
+
+# =========================
+# Environment & Config
+# =========================
+python-dotenv
+
+# =========================
+# LangChain Core
+# =========================
+langchain
+langchain-text-splitters
+langchain-community
+langchain-openai
+langchain-core
+langchain-huggingface
+python-dotenv
+
+# =========================
+# Vector Database
+# =========================
+chromadb
+
+# =========================
+# Document Loaders
+# =========================
+pypdf
+pdfplumber
+
+# OCR
+pytesseract
+Pillow
+
+# =========================
+# Tokenization
+# =========================
+tiktoken
+
+# =========================
+# Hugging Face (LLMs & Embeddings)
+# =========================
+transformers
+torch
+sentence-transformers
+accelerate
+huggingface-hub
+
+# =========================
+# Text Processing
+# =========================
+unstructured
+unstructured[pdf]
+
+# =========================
+# Observability (Optional but Recommended)
+# =========================
+langsmith
+
+# =========================
+# Utilities
+# =========================
+numpy
+pydantic
+requests
+scikit-learn
