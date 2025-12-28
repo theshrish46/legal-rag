@@ -4,85 +4,40 @@ from datetime import datetime
 from uuid import uuid4
 from pathlib import Path
 
+
 # Fast PDF Processing
 from pypdf import PdfReader
-
-# Environment
-from dotenv import load_dotenv
-
-# LangChain & Qdrant
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from langchain_huggingface import (
-    HuggingFaceEmbeddings,
-    ChatHuggingFace,
-    HuggingFaceEndpoint,
-)
-from qdrant_client import QdrantClient
-from langchain_qdrant import QdrantVectorStore
-from qdrant_client.http.models import Distance, VectorParams
+
+
+# DB Imports
+from qdrantDB.qdrant_db import get_vector_store
+from qdrantDB.retriever import get_contextual_compression_retriever
+from qdrantDB.utils import is_file_indexed
+
+# Text Handler Import
+from text_handler.text_splitter import get_recursive_text_splitter
+
 
 # --- RERANKING (The fix for "Random Results") ---
-from langchain_classic.retrievers import ContextualCompressionRetriever
-from langchain_classic.retrievers.document_compressors import FlashrankRerank
+
 
 # 1. SETUP PAGE & ENV
 st.set_page_config(layout="wide", page_title="Legal AI Auditor")
-load_dotenv()
 
 # 2. SESSION STATE (Only for UI caching, not logic blocking)
 if "processed_files" not in st.session_state:
     st.session_state.processed_files = set()
 
 
-# --- CACHED RESOURCES (Speed Fix) ---
-@st.cache_resource
-def get_qdrant_client():
-    client = QdrantClient(
-        url=os.getenv("CLUSTER_ENDPOINT"), api_key=os.getenv("QDRANT_API_KEY")
-    )
-    if not client.collection_exists(collection_name="legal-rag"):
-        client.create_collection(
-            collection_name="legal-rag",
-            vectors_config=VectorParams(size=768, distance=Distance.COSINE),
-        )
-    return client
-
-
-@st.cache_resource
-def get_embedding_model():
-    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
-
-
-@st.cache_resource
-def get_llm():
-    return HuggingFaceEndpoint(
-        repo_id="deepseek-ai/DeepSeek-V3", task="text-generation", temperature=0.5
-    )
-
-
-# Initialize
-qdrant_client = get_qdrant_client()
-embedding_model = get_embedding_model()
-llm = get_llm()
-
-vector_store = QdrantVectorStore(
-    client=qdrant_client,
-    collection_name="legal-rag",
-    embedding=embedding_model,
-)
-
 # --- THE RETRIEVER SETUP ---
 # 1. Fetch 15 docs (Wide Net)
-base_retriever = vector_store.as_retriever(search_kwargs={"k": 15})
+vector_store = get_vector_store()
 
 # 2. Re-rank top 3 (Sniper) - Fixes the "Random Things" issue
-compressor = FlashrankRerank(model="ms-marco-TinyBERT-L-2-v2")
-retriever = ContextualCompressionRetriever(
-    base_compressor=compressor, base_retriever=base_retriever
-)
+retriever = get_contextual_compression_retriever()
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+splitter = get_recursive_text_splitter(chunk_size=500, chunk_overlap=100)
 
 # --- UI ---
 st.title("Legal RAG")
@@ -95,7 +50,8 @@ with st.sidebar:
 
     if uploaded_files:
         for uploaded in uploaded_files:
-            if uploaded.name in st.session_state.processed_files:
+            if is_file_indexed(vector_store.client, "legal-rag", uploaded.name):
+                st.toast(f"Skipping {uploaded.name} already exsists")
                 continue
 
             # Robust Metadata
@@ -132,8 +88,16 @@ with st.sidebar:
                     new_docs = []
                     uuids = []
                     for chunk in chunks:
+                        contextualized_text = (
+                            f"Document Title : {meta_data['doc_title']} | "
+                            f"Date : {meta_data['date']} |"
+                            f"Company : {meta_data['company']} |"
+                            f"{chunk}"
+                        )
                         new_docs.append(
-                            Document(page_content=chunk, metadata=meta_data)
+                            Document(
+                                page_content=contextualized_text, metadata=meta_data
+                            )
                         )
                         uuids.append(str(uuid4()))
 
@@ -148,25 +112,19 @@ with st.sidebar:
 
 # --- RETRIEVAL ---
 st.divider()
-input_text = st.text_input("Your Message")
 
-if input_text:
-    # No more "Upload First" check. If Qdrant has data, it searches.
-    try:
-        results = retriever.invoke(input_text)
+if prompt := st.chat_input("Ask about your legal docs...", key="first_chat"):
+    # 1. Show User Message
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-        if not results:
-            st.warning("No relevant documents found in the database.")
-        else:
-            st.success(f"Found {len(results)} relevant chunks.")
-            for doc in results:
-                # Flashrank moves metadata to 'doc.metadata' directly
-                filename = doc.metadata.get("source_filename", "Unknown")
-                score = doc.metadata.get(
-                    "relevance_score", "N/A"
-                )  # Flashrank adds this
+    # 2. Run RAG
+    results = retriever.invoke(prompt)
 
-                with st.expander(f"Source: {filename} (Score: {score})"):
-                    st.write(doc.page_content)
-    except Exception as e:
-        st.error(f"Search Error: {e}")
+    if not results:
+        with st.chat_message("assistant"):
+            st.markdown("No relevant results")
+    else:
+        with st.chat_message("assistant"):
+            st.markdown("Here's what I found")
+            st.markdown(results)
