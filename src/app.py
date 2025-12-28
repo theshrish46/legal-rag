@@ -14,6 +14,7 @@ from langchain_core.documents import Document
 from qdrantDB.qdrant_db import get_vector_store
 from qdrantDB.retriever import get_contextual_compression_retriever
 from qdrantDB.utils import is_file_indexed
+from prompts.legal_prompt import format_docs, get_rag_chain
 
 # Text Handler Import
 from text_handler.text_splitter import get_recursive_text_splitter
@@ -121,10 +122,12 @@ if prompt := st.chat_input("Ask about your legal docs...", key="first_chat"):
     # 2. Run RAG
     results = retriever.invoke(prompt)
 
-    if not results:
+    if results:
+        context_text = format_docs(results)
+        rag_chain = get_rag_chain()
+
         with st.chat_message("assistant"):
-            st.markdown("No relevant results")
-    else:
-        with st.chat_message("assistant"):
-            st.markdown("Here's what I found")
-            st.markdown(results)
+            response_stream = rag_chain.stream(
+                {"context": context_text, "question": prompt, "chat_history": []}
+            )
+        st.write_stream(response_stream)
