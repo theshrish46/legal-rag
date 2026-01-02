@@ -31,6 +31,9 @@ if "processed_files" not in st.session_state:
     st.session_state.processed_files = set()
 
 
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
 # --- THE RETRIEVER SETUP ---
 # 1. Fetch 15 docs (Wide Net)
 vector_store = get_vector_store()
@@ -114,20 +117,46 @@ with st.sidebar:
 # --- RETRIEVAL ---
 st.divider()
 
+
+# 1. Display History
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# 2. Handle Input
 if prompt := st.chat_input("Ask about your legal docs...", key="first_chat"):
-    # 1. Show User Message
+    # Add User Message to State
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    # Show User Message
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2. Run RAG
+    # 3. RAG Logic
     results = retriever.invoke(prompt)
 
     if results:
         context_text = format_docs(results)
+
+        # Ensure you pass your 'chat_model' here if your function requires it
+        # e.g., rag_chain = get_rag_chain(chat_model)
         rag_chain = get_rag_chain()
 
         with st.chat_message("assistant"):
+            # Create the stream generator
             response_stream = rag_chain.stream(
                 {"context": context_text, "question": prompt, "chat_history": []}
             )
-        st.write_stream(response_stream)
+
+            # --- THE FIX ---
+            # st.write_stream writes to UI AND returns the final string
+            full_response = st.write_stream(response_stream)
+
+        # Append the STRING 'full_response', not the stream object
+        st.session_state.messages.append(
+            {"role": "assistant", "content": full_response}
+        )
+    else:
+        # Handle case where no docs are found
+        with st.chat_message("assistant"):
+            st.warning("No relevant documents found.")

@@ -10,7 +10,7 @@ def get_flash_rerank(model="ms-marco-TinyBERT-L-2-v2"):
 
 
 compressor = get_flash_rerank()
-base_retriever = get_vector_store().as_retriever()
+base_retriever = get_vector_store().as_retriever(kwargs=20)
 
 
 def get_contextual_compression_retriever(
