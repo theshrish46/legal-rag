@@ -6,11 +6,11 @@ from qdrantDB.qdrant_db import get_vector_store
 
 
 def get_flash_rerank(model="ms-marco-TinyBERT-L-2-v2"):
-    return FlashrankRerank(model=model)
+    return FlashrankRerank(model=model, top_n=5)
 
 
 compressor = get_flash_rerank()
-base_retriever = get_vector_store().as_retriever(kwargs=20)
+base_retriever = get_vector_store().as_retriever(kwargs=25)
 
 
 def get_contextual_compression_retriever(

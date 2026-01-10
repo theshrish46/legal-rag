@@ -19,6 +19,7 @@ from prompts.legal_prompt import format_docs, get_rag_chain
 # Text Handler Import
 from text_handler.text_splitter import get_recursive_text_splitter
 
+from utils.utils import get_chat_history
 
 # --- RERANKING (The fix for "Random Results") ---
 
@@ -41,7 +42,7 @@ vector_store = get_vector_store()
 # 2. Re-rank top 3 (Sniper) - Fixes the "Random Things" issue
 retriever = get_contextual_compression_retriever()
 
-splitter = get_recursive_text_splitter(chunk_size=500, chunk_overlap=100)
+splitter = get_recursive_text_splitter(chunk_size=2000, chunk_overlap=400)
 
 # --- UI ---
 st.title("Legal RAG")
@@ -138,23 +139,21 @@ if prompt := st.chat_input("Ask about your legal docs...", key="first_chat"):
     if results:
         context_text = format_docs(results)
 
-        # Ensure you pass your 'chat_model' here if your function requires it
-        # e.g., rag_chain = get_rag_chain(chat_model)
         rag_chain = get_rag_chain()
 
         with st.chat_message("assistant"):
-            # Create the stream generator
             response_stream = rag_chain.stream(
-                {"context": context_text, "question": prompt, "chat_history": []}
+                {
+                    "context": context_text,
+                    "question": prompt,
+                    "chat_history": get_chat_history(),
+                }
             )
 
-            # --- THE FIX ---
-            # st.write_stream writes to UI AND returns the final string
-            full_response = st.write_stream(response_stream)
+            full_response_stream = st.write_stream(response_stream)
 
-        # Append the STRING 'full_response', not the stream object
         st.session_state.messages.append(
-            {"role": "assistant", "content": full_response}
+            {"role": "assistant", "content": full_response_stream}
         )
     else:
         # Handle case where no docs are found
