@@ -5,7 +5,7 @@ from langchain_qdrant import QdrantVectorStore
 from qdrant_client.http.models import Distance, VectorParams
 
 
-from models.models import get_embedding_model
+from models_utils.models import get_embedding_model
 
 
 def get_qdrant_client():
