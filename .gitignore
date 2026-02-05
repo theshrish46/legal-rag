@@ -57,6 +57,7 @@ models/
 # Raw / processed data
 data/
 datasets/
+test_data
 *.csv
 *.parquet
 *.jsonl
