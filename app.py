@@ -29,29 +29,35 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # --- 3. SIDEBAR: DOCUMENT INGESTION ---
+# --- 3. SIDEBAR: DOCUMENT INGESTION ---
+if "indexed_files" not in st.session_state:
+    st.session_state.indexed_files = set()
+
+# MOVE THIS OUT OF THE IF BLOCK
 with st.sidebar:
     st.title("📂 Document Center")
-    uploaded_files = st.file_uploader(
-        "Upload Legal PDFs", accept_multiple_files=True, type="pdf"
-    )
+    uploaded_files = st.file_uploader("Upload PDFs", accept_multiple_files=True)
 
     if uploaded_files:
         for file in uploaded_files:
-            # Prevent Duplicates
-            if is_file_indexed(vector_store.client, "legal-rag", file.name):
-                st.info(f"✔ {file.name} is already indexed.")
+            if file.name in st.session_state.indexed_files:
+                st.write(f"✔️ {file.name} ready")
                 continue
 
-            with st.status(f"Analyzing {file.name}...", expanded=False) as status:
-                try:
-                    docs = process_pdf_to_documents(file, splitter)
-                    ids = [str(uuid4()) for _ in range(len(docs))]
-                    vector_store.add_documents(documents=docs, ids=ids)
-                    status.update(label=f"✅ {file.name} indexed!", state="complete")
-                    count = vector_store.client.count(collection_name="legal-rag").count
-                    st.write(f"Confirmed points in cloud: {count}")
-                except Exception as e:
-                    st.error(f"Failed to index {file.name}: {e}")
+            if is_file_indexed(vector_store.client, "legal-rag", file.name):
+                st.session_state.indexed_files.add(file.name)
+                st.write(f"✔️ {file.name} ready")
+                continue
+
+            # Perform indexing if new
+            with st.status(f"Processing {file.name}...", expanded=False) as status:
+                docs = process_pdf_to_documents(file, splitter)
+                # Generate unique IDs to prevent Qdrant metadata collisions
+                ids = [str(uuid4()) for _ in docs]
+                vector_store.add_documents(docs, ids=ids)
+                st.session_state.indexed_files.add(file.name)
+                status.update(label=f"✅ {file.name} indexed", state="complete")
+
 
 # --- 4. CHAT INTERFACE ---
 st.title("⚖️ Legal RAG Auditor")
