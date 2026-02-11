@@ -1,109 +1,91 @@
-import pandas as pd
 import os
+import pandas as pd
 import time
 import nest_asyncio
+from dotenv import load_dotenv
 from datasets import Dataset
-from ragas import evaluate
-from ragas.run_config import RunConfig
-from ragas.metrics.collections import (
-    Faithfulness,
-    AnswerRelevancy,
-    ContextPrecision,
-    ContextRecall,
-)
-from ragas.llms import LangchainLLMWrapper, llm_factory
+
+# 1. Imports: Metrics must come from .collections in v0.4
+from ragas import evaluate, EvaluationDataset, RunConfig
+from ragas.metrics.collections import Faithfulness, ContextRecall, FactualCorrectness
+from ragas.llms import llm_factory
+from langchain_google_genai import ChatGoogleGenerativeAI
 from google import genai
 
+# Your project imports
 from src.prompts.legal_templates import get_rag_chain
-from dotenv import load_dotenv
-
 
 load_dotenv()
-
 nest_asyncio.apply()
 
-# 1. Load data
-df_test = pd.read_csv("tests/legal_eval_set.csv")
+# 1. Setup Student (RAG Chain)
 rag_chain = get_rag_chain()
 
+# 2. Setup Judge (Unified Factory)
+# We use the ChatGoogleGenerativeAI object directly in the factory
+# client = ChatGoogleGenerativeAI(
+#     model="gemini-1.5-pro", google_api_key=os.environ.get("GOOGLE_API_KEY")
+# )
 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-ragas_judge = llm_factory("gemini-1.5-flash", provider="google", client=client)
+client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 
-# 2. Collect RAG responses (The Inference phase)
-# Note: Inference uses your app's LLM, which also counts toward quota!
-questions = df_test["question"].tolist()
-ground_truths = df_test["ground_truth"].tolist()
-answers = []
-contexts = []
+# In v0.4, llm_factory returns the correctly initialized Ragas LLM
+evaluator_llm = llm_factory(model="gemini-1.5-pro", provider="google", client=client)
 
-# Slicing to just 3 samples to save your daily quota
+# 3. Prepare Dataset
+df_test = pd.read_csv("tests/legal_eval_set.csv")
 MAX_SAMPLES = 3
-print(f"Began inference for {MAX_SAMPLES} samples...")
+data = []
+
+print(f"Running inference for {MAX_SAMPLES} samples...")
 
 for i in range(MAX_SAMPLES):
-    query = questions[i]
-    print(f"Processing Inference {i+1}/{MAX_SAMPLES}...")
-    response = rag_chain.invoke({"question": query, "chat_history": []})
-    answers.append(response)
-    raw_context = df_test[df_test["question"] == query]["context"].values[0]
-    contexts.append([raw_context])
+    question = df_test["question"].iloc[i]
+    ground_truth = df_test["ground_truth"].iloc[i]
 
-    # Wait to avoid hitting RPM limits during inference
-    time.sleep(10)
+    # Get response from your chain
+    response = rag_chain.invoke({"question": question, "chat_history": []})
+    context = [df_test["context"].iloc[i]]
 
-# 3. Step-by-Step Evaluation (The Judge phase)
-final_results = []
-# We keep RunConfig strict even in the loop
-run_config = RunConfig(max_workers=1, max_retries=10, timeout=120)
+    data.append(
+        {
+            "user_input": question,
+            "response": response,
+            "retrieved_contexts": context,
+            "reference": ground_truth,
+        }
+    )
+    print(f"Sample {i+1} inference complete. Waiting 10s...")
+    time.sleep(80)
 
-print("\nStarting RAGAS Scoring with High-Safety Cooldowns...")
+eval_dataset = EvaluationDataset.from_list(data)
 
-for i in range(MAX_SAMPLES):
-    print(f"--- Judging Sample {i+1}/{MAX_SAMPLES} ---")
+# 4. Initialize Metrics (The Fix)
+# Do NOT pass the LLM inside these parentheses.
+# This is what causes the "All metrics must be initialised" error.
+metrics = [
+    Faithfulness(llm=evaluator_llm),
+    FactualCorrectness(llm=evaluator_llm, mode="precision"),
+    ContextRecall(llm=evaluator_llm),
+]
 
-    single_row = {
-        "question": [questions[i]],
-        "answer": [answers[i]],
-        "contexts": [contexts[i]],
-        "ground_truth": [ground_truths[i]],
-    }
-    mini_dataset = Dataset.from_dict(single_row)
+print("\nStarting Evaluation Phase...")
 
-    try:
-        # Scoring one row can take ~4-5 API calls.
-        # With 15 RPM, we should ideally wait after every row.
-        res = evaluate(
-            mini_dataset,
-            metrics=[
-                Faithfulness(llm=ragas_judge),
-                AnswerRelevancy(llm=ragas_judge),
-                ContextPrecision(llm=ragas_judge),
-                ContextRecall(llm=ragas_judge),
-            ],
-            run_config=run_config,
-        )
-        final_results.append(res.to_pandas())
-        print(f"✅ Success for sample {i+1}")
-    except Exception as e:
-        print(f"❌ Error on sample {i+1}: {e}")
-        # If we hit a 429 here, wait even longer
-        if "429" in str(e):
-            print("Rate limit detected! Taking a 2-minute emergency break...")
-            time.sleep(120)
+try:
+    # We pass the judge (evaluator_llm) ONCE here.
+    # Ragas will automatically inject it into the metrics above.
+    results = evaluate(
+        dataset=eval_dataset,
+        metrics=metrics,
+        llm=evaluator_llm,
+        run_config=RunConfig(timeout=240, max_retries=5, max_workers=1),
+    )
 
-    # MANDATORY COOLDOWN
-    # Why 70s? Gemini's "Minute" is a sliding window.
-    # Waiting 70s ensures the previous "burst" of 5 calls is fully cleared.
-    if i < MAX_SAMPLES - 1:
-        print("Cooldown: Waiting 80 seconds to reset API window...")
-        time.sleep(80)
+    # 5. Save results
+    df_results = results.to_pandas()
+    df_results.to_csv("tests/evaluation_results.csv", index=False)
+    print("\n✅ Success! CSV saved to tests/evaluation_results.csv")
+    print(df_results.mean(numeric_only=True))
 
-# 4. Merge and Save
-if final_results:
-    all_results_df = pd.concat(final_results, ignore_index=True)
-    os.makedirs("tests", exist_ok=True)
-    all_results_df.to_csv("tests/evaluation_results.csv", index=False)
-    print("\n✅ Evaluation Complete! Results saved in tests/evaluation_results.csv")
-else:
-    print("\n❌ No samples were successfully evaluated.")
+except Exception as e:
+    print(f"❌ Eval failed: {e}")
