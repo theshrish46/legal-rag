@@ -60,6 +60,8 @@ def generate_test_set(num_samples=10):
 
     # 2. Save to CSV for RAGAS
     df = pd.DataFrame(dataset)
+    df = df.rename(columns={"question": "user_input", "ground_truth": "reference"})
+    df["retrieved_contexts"] = df["context"].apply(lambda x: [x])
     df.to_csv("tests/legal_eval_set.csv", index=False)
     return df
 
