@@ -1,119 +1,94 @@
-import os
 import pandas as pd
-import asyncio
-import nest_asyncio
-import multiprocessing  # <--- Add this
-from dotenv import load_dotenv
-from ragas import EvaluationDataset, RunConfig, experiment
-from ragas.metrics.collections import Faithfulness
-from ragas.llms import llm_factory
-from ragas.backends import LocalJSONLBackend
-from google import genai
+import time
+import os
+from deepeval.metrics import (
+    FaithfulnessMetric,
+    ContextualPrecisionMetric,
+    ContextualRecallMetric,
+    GEval,
+)
 
-# Your project imports
+# Fixed Import: LLMTestCaseParams must be imported from deepeval.test_case
+from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+from deepeval.models import GeminiModel
 from src.prompts.legal_templates import get_rag_chain
-from google import genai
 
+# 1. SETUP MODELS & CHAIN
+# Ensure your GOOGLE_API_KEY is in your environment variables
+eval_model = GeminiModel(model="gemini-2.5-flash")
+chain = get_rag_chain()
 
-def setup_env():
-    load_dotenv()
-    nest_asyncio.apply()
+# 2. INITIALIZE METRICS
+precision_metric = ContextualPrecisionMetric(threshold=0.7, model=eval_model)
+recall_metric = ContextualRecallMetric(threshold=0.7, model=eval_model)
+faithfulness_metric = FaithfulnessMetric(threshold=0.7, model=eval_model)
 
-    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+# Fixed GEval: Added name, criteria, and evaluation_params correctly
+correctness_metric = GEval(
+    name="Legal Correctness",
+    model=eval_model,
+    criteria="Assess whether the actual output matches the expected output in terms of legal facts and numbers.",
+    evaluation_params=[
+        LLMTestCaseParams.ACTUAL_OUTPUT,
+        LLMTestCaseParams.EXPECTED_OUTPUT,
+    ],
+    threshold=0.7,
+)
 
-    evaluator_llm = llm_factory(
-        model="gemini-1.5-pro", provider="google", client=client
+metrics = [precision_metric, recall_metric, faithfulness_metric, correctness_metric]
+
+# 3. RUN AUDIT
+df = pd.read_csv("legal_eval_set.csv")
+results = []
+
+print(f"🚀 Starting audit for {len(df)} legal queries...")
+
+for index, row in df.iterrows():
+    print(f"Auditing Row {index + 1}/{len(df)}...")
+
+    # A. Get RAG Response
+    # Note: Ensure your chain returns 'answer' and 'retrieved_docs'
+    output = chain.invoke({"question": row["question"], "chat_history": []})
+
+    full_answer = output.get("answer", "")
+    # Convert LangChain Document objects to raw strings for DeepEval
+    docs = output.get("retrieved_docs", [])
+    retrieved_context_strings = [doc.page_content for doc in docs]
+
+    # B. Create Test Case (MOVED INSIDE THE LOOP)
+    test_case = LLMTestCase(
+        input=row["question"],
+        actual_output=full_answer,
+        expected_output=str(row["ground_truth"]),
+        retrieval_context=retrieved_context_strings,
     )
-    return evaluator_llm, get_rag_chain()
 
+    # C. Measure each metric
+    for metric in metrics:
+        metric.measure(test_case)
+        # Small sleep between metrics to avoid rate limits
+        time.sleep(2)
 
-evaluator_llm, rag_chain = setup_env()
-faithfulness = Faithfulness(llm=evaluator_llm)
-
-
-@experiment()
-async def agent_eval(row, **kwargs):
-    try:
-        u_input = str(row.user_input)
-
-        agent_output = rag_chain.invoke({"question": u_input, "chat_history": []})
-
-        # 2. Extract answer text safely
-        response_text = (
-            agent_output.get("answer")
-            if isinstance(agent_output, dict)
-            else str(agent_output)
-        )
-
-        print(f"Agent generated response. Sleeping 85s before scoring...")
-        await asyncio.sleep(85)
-
-        # scoring_task = faithfulness.ascore(
-        #     user_input=u_input,
-        #     response=str(response_text),
-        #     retrieved_contexts=list(row.retrieved_contexts),
-        # )
-
-        # result = await scoring_task
-
-        # if asyncio.iscoroutine(result):
-        #     result = await result
-        # final_score = result.value if hasattr(result, "value") else float(result)
-
-        def calculate_score():
-            return faithfulness.score(
-                user_input=u_input,
-                response=str(response_text),
-                retrieved_contexts=list(row.retrieved_contexts),
-            )
-
-        # We 'await' the result of the thread
-        f_score = await asyncio.to_thread(calculate_score)
-
-        return {
-            "user_input": u_input,
-            "response": str(response_text),
-            "faithfulness": f_score.value if hasattr(f_score, "value") else f_score,
+    # D. Store results
+    results.append(
+        {
+            "question": row["question"],
+            "ground_truth": row["ground_truth"],
+            "actual_output": full_answer,
+            "faithfulness": faithfulness_metric.score,
+            "precision": precision_metric.score,
+            "recall": recall_metric.score,
+            "correctness": correctness_metric.score,
+            "reasoning": correctness_metric.reason,
         }
-    except Exception as e:
-        import traceback
-
-        traceback.print_exc()
-        return {"error": str(e)}
-
-
-async def main():
-    # 1. Load and Clean Data INSIDE main
-    df = pd.read_csv("tests/legal_eval_set.csv")
-    df = df.rename(columns={"question": "user_input", "ground_truth": "reference"})
-    df["retrieved_contexts"] = df["context"].apply(lambda x: [x])
-
-    dataset = EvaluationDataset.from_list(df.to_dict("records"))
-
-    # 2. Setup Backend
-    os.makedirs("ragas_data", exist_ok=True)
-    my_backend = LocalJSONLBackend("ragas_data")
-
-    # 3. Config
-    config = RunConfig(max_workers=1, timeout=400)
-
-    # 4. Run
-    print(
-        "Starting evaluation... This will take a few minutes due to rate limit sleeps."
     )
-    results = await agent_eval.arun(
-        dataset=dataset, run_config=config, backend=my_backend, name="legal_audit_v1"
-    )
-    print("\n" + "=" * 30)
-    print("EVALUATION RESULTS")
-    print("=" * 30)
-    print(results.to_pandas()[["user_input", "response", "faithfulness"]])
-    print("=" * 30)
 
-    print("Done!")
+    # E. Long sleep to stay within Gemini Free Tier limits (approx 15 RPM)
+    print(f"✅ Row {index + 1} complete. Sleeping for cooldown...")
+    time.sleep(90)
 
-
-if __name__ == "__main__":
-    # CRITICAL FOR WINDOWS: This prevents the 'RLock' and 'Recursion' errors
-    multiprocessing.freeze_support()
-    asyncio.run(main())
+# 4. EXPORT
+report_name = "legal_audit_report.csv"
+pd.DataFrame(results).to_csv(report_name, index=False)
+print(f"✨ Audit Finished! Report saved to {report_name}")
+print(f"Results ===============> {results}")

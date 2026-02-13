@@ -49,14 +49,26 @@ def get_rag_chain():
 
     setup_and_retrieval = RunnableParallel(
         {
-            # We use a lambda to "extract" the string from the dictionary
-            "context": (lambda x: x["question"]) | retriever | format_docs,
-            # We pass the rest through
+            "context": (lambda x: x["question"])
+            | retriever,  # Keep as Doc objects here
             "question": lambda x: x["question"],
             "chat_history": lambda x: x["chat_history"],
         }
     )
 
-    rag_chain = setup_and_retrieval | prompt | llm | StrOutputParser()
+    # We use a chain that preserves context
+    rag_chain = setup_and_retrieval | {
+        "answer": (
+            lambda x: {
+                "context": format_docs(x["context"]),
+                "question": x["question"],
+                "chat_history": x["chat_history"],
+            }
+        )
+        | prompt
+        | llm
+        | StrOutputParser(),
+        "retrieved_docs": lambda x: x["context"],  # Pass the docs through for audit
+    }
 
     return rag_chain
