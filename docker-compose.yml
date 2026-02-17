@@ -1,0 +1,22 @@
+
+services:
+  legal-rag:
+    build: .
+    container_name: legal-rag
+    working_dir: /app
+    ports:
+      - "8501:8501"
+    
+    # Use 'environment' for API Keys, NOT 'entrypoint'
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_URL=${QDRANT_URL}
+      - HUGGINGFACEHUB_API_TOKEN=${HUGGINGFACEHUB_API_TOKEN}
+    
+    volumes:
+      - .:/app
+    
+    # This ensures your terminal output stays "alive" so you can see the audit progress
+    tty: true
+    stdin_open: true

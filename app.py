@@ -82,6 +82,16 @@ if prompt := st.chat_input("Ask a legal question..."):
 
         response_stream = chain.stream({"question": prompt, "chat_history": history})
 
-        full_response = st.write_stream(response_stream)
+        def stream_parser():
+            for chunk in response_stream:
+                # Extracts 'content' if it's a message chunk, or 'answer' if it's a RAG dict
+                yield (
+                    chunk.content
+                    if hasattr(chunk, "content")
+                    else chunk.get("answer", "")
+                )
+
+        # 3. Pass the generator to write_stream
+        full_response = st.write_stream(stream_parser())
 
     st.session_state.messages.append({"role": "assistant", "content": full_response})
