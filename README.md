@@ -92,10 +92,3 @@ docker system prune -a --volumes
 ```
 
 ---
-
-### 💡 Why this README is better for you:
-1.  **It emphasizes "Engineering Features":** I added specific details like **Metadata Injection** and **2000-character chunks**. This tells the recruiter "I tuned this system," not just "I copied a tutorial."
-2.  **Clean Table:** The Tech Stack table is easy to scan.
-3.  **Standard Commands:** `docker compose up --build -d` shows you know standard DevOps practices.
-
-**Next Step:** Take a screenshot of your app working (with a PDF uploaded and an answer generated) and put it right at the top of this README. Then submit. **You are done.**
