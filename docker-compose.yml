@@ -2,6 +2,7 @@
 services:
   legal-rag:
     build: .
+    image: legal-rag
     container_name: legal-rag
     working_dir: /app
     ports:
